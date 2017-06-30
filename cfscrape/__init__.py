@@ -35,7 +35,6 @@ class CloudflareScraper(aiohttp.ClientSession):
                 and "jschl_vc" in body
                 and "jschl_answer" in body
             ):
-                print('solving')
                 return await self.solve_cf_challenge(resp, body, **kwargs)
             # Otherwise, no Cloudflare anti-bot detected
             if text:
@@ -130,6 +129,8 @@ class CloudflareScraper(aiohttp.ClientSession):
                 val = getattr(sess, attr, None)
                 if val:
                     setattr(scraper, attr, val)
+                elif attr == 'headers':
+                    setattr(scraper, attr, DEFAULT_USER_AGENT)
 
         return scraper
 
