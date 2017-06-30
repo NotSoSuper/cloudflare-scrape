@@ -44,14 +44,15 @@ class CloudflareScraper(aiohttp.ClientSession):
     async def solve_cf_challenge(self, resp, body, **original_kwargs):
         await asyncio.sleep(5)  # Cloudflare requires a delay before solving the challenge
 
-        parsed_url = urlparse(resp.url)
+        url = str(resp.url)
+        parsed_url = urlparse(url)
         domain = parsed_url.netloc
         submit_url = "%s://%s/cdn-cgi/l/chk_jschl" % (parsed_url.scheme, domain)
 
         cloudflare_kwargs = deepcopy(original_kwargs)
         params = cloudflare_kwargs.setdefault("params", {})
         headers = cloudflare_kwargs.setdefault("headers", {})
-        headers["Referer"] = resp.url
+        headers["Referer"] = url
 
         try:
             params["jschl_vc"] = re.search(r'name="jschl_vc" value="(\w+)"', body).group(1)
@@ -150,7 +151,7 @@ class CloudflareScraper(aiohttp.ClientSession):
             print("'%s' returned an error. Could not collect tokens." % url)
             raise
 
-        domain = urlparse(resp.url).netloc
+        domain = urlparse(str(resp.url)).netloc
         cookie_domain = None
 
         for d in scraper.cookies.list_domains():
