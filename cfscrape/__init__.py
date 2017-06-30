@@ -1,12 +1,9 @@
-import logging
 import random
 import re
-from requests.sessions import Session
-from copy import deepcopy
-from time import sleep
-
+import aiohttp
+import asyncio
 import execjs
-
+from copy import deepcopy
 
 try:
     from urlparse import urlparse
@@ -27,34 +24,29 @@ BUG_REPORT = ("Cloudflare may have changed their technique, or there may be a bu
 "bug report at https://github.com/Anorov/cloudflare-scrape/issues.")
 
 
-class CloudflareScraper(Session):
-    def __init__(self, *args, **kwargs):
-        super(CloudflareScraper, self).__init__(*args, **kwargs)
+class CloudflareScraper(aiohttp.ClientSession):
 
-        if "requests" in self.headers["User-Agent"]:
-            # Spoof Firefox on Linux if no custom User-Agent has been set
-            self.headers["User-Agent"] = DEFAULT_USER_AGENT
+    async def make_request(self, method, *args, **kwargs):
+        text = kwargs.pop('text', True)
+        async with getattr(self, method)(*args, **kwargs) as resp:
+            body = await resp.text()
+            if ( resp.status == 503
+                and resp.headers.get("Server") == "cloudflare-nginx"
+                and "jschl_vc" in body
+                and "jschl_answer" in body
+            ):
+                print('solving')
+                return await self.solve_cf_challenge(resp, body, **kwargs)
+            # Otherwise, no Cloudflare anti-bot detected
+            if text:
+                return body
+            return resp
 
-    def request(self, method, url, *args, **kwargs):
-        resp = super(CloudflareScraper, self).request(method, url, *args, **kwargs)
+    async def solve_cf_challenge(self, resp, body, **original_kwargs):
+        await asyncio.sleep(5)  # Cloudflare requires a delay before solving the challenge
 
-        # Check if Cloudflare anti-bot is on
-        if ( resp.status_code == 503
-             and resp.headers.get("Server") == "cloudflare-nginx"
-             and b"jschl_vc" in resp.content
-             and b"jschl_answer" in resp.content
-        ):
-            return self.solve_cf_challenge(resp, **kwargs)
-
-        # Otherwise, no Cloudflare anti-bot detected
-        return resp
-
-    def solve_cf_challenge(self, resp, **original_kwargs):
-        sleep(5)  # Cloudflare requires a delay before solving the challenge
-
-        body = resp.text
         parsed_url = urlparse(resp.url)
-        domain = urlparse(resp.url).netloc
+        domain = parsed_url.netloc
         submit_url = "%s://%s/cdn-cgi/l/chk_jschl" % (parsed_url.scheme, domain)
 
         cloudflare_kwargs = deepcopy(original_kwargs)
@@ -74,15 +66,16 @@ class CloudflareScraper(Session):
             raise ValueError("Unable to parse Cloudflare anti-bots page: %s %s" % (e.message, BUG_REPORT))
 
         # Solve the Javascript challenge
-        params["jschl_answer"] = str(self.solve_challenge(body) + len(domain))
+        answer = str(await self.loop.run_in_executor(None, self.solve_challenge, body) + len(domain))
+        params["jschl_answer"] = answer
 
         # Requests transforms any request into a GET after a redirect,
         # so the redirect has to be handled manually here to allow for
         # performing other types of requests even as the first request.
-        method = resp.request.method
+        method = resp.method.lower()
         cloudflare_kwargs["allow_redirects"] = False
-        redirect = self.request(method, submit_url, **cloudflare_kwargs)
-        return self.request(method, redirect.headers["Location"], **original_kwargs)
+        redirect = await self.make_request(method, submit_url, text=False, **cloudflare_kwargs)
+        return await self.make_request(method, redirect.headers["Location"], **original_kwargs)
 
     def solve_challenge(self, body):
         try:
@@ -114,7 +107,7 @@ class CloudflareScraper(Session):
         try:
             result = node.exec_(js)
         except Exception:
-            logging.error("Error executing Cloudflare IUAM Javascript. %s" % BUG_REPORT)
+            print("Error executing Cloudflare IUAM Javascript. %s" % BUG_REPORT)
             raise
 
         try:
@@ -153,7 +146,7 @@ class CloudflareScraper(Session):
             resp = scraper.get(url, **kwargs)
             resp.raise_for_status()
         except Exception as e:
-            logging.error("'%s' returned an error. Could not collect tokens." % url)
+            print("'%s' returned an error. Could not collect tokens." % url)
             raise
 
         domain = urlparse(resp.url).netloc
