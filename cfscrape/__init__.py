@@ -75,6 +75,10 @@ class CloudflareScraper(aiohttp.ClientSession):
         method = resp.method.lower()
         cloudflare_kwargs["allow_redirects"] = False
         redirect = await self.make_request(method, submit_url, text=False, **cloudflare_kwargs)
+        redirect_location = urlparse(redirect.headers["Location"])
+        if not redirect_location.netloc:
+            redirect_url = '%s://%s%s' % (parsed_url.scheme, domain, redirect_location.path)
+            return await self.make_request(method, redirect_url, **original_kwargs)
         return await self.make_request(method, redirect.headers["Location"], **original_kwargs)
 
     def solve_challenge(self, body):
@@ -96,7 +100,7 @@ class CloudflareScraper(aiohttp.ClientSession):
 
         # Use vm.runInNewContext to safely evaluate code
         # The sandboxed code cannot use the Node.js standard library
-        js = "return require('vm').runInNewContext('%s');" % js
+        js = "return require('vm').runInNewContext('%s', Object.create(null), {timeout: 5000});" % js
 
         try:
             node = execjs.get("Node")
